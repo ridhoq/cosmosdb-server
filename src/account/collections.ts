@@ -1,4 +1,4 @@
-/* eslint-disable class-methods-use-this, no-underscore-dangle, no-use-before-define */
+/* eslint-disable class-methods-use-this, no-bitwise, no-underscore-dangle, no-use-before-define */
 import Collection from "./collection";
 import Database from "./database";
 import ItemObject from "./item-object";
@@ -9,6 +9,7 @@ export default class Collections extends Items<Database, Collection> {
   _set(data: ItemObject) {
     const indexingPolicy: any = data.indexingPolicy || {};
     const _data = {
+      geospatialConfig: {},
       ...data,
       indexingPolicy: {
         ...indexingPolicy,
@@ -24,9 +25,13 @@ export default class Collections extends Items<Database, Collection> {
     return new Collection(data);
   }
 
-  _rid(id: string) {
+  _rid(id: number) {
     const database = this._parent.read();
-    return ResourceId.newDocumentCollectionId(database._rid, id).toString();
+    const idString = (id | 0x80000000).toString();
+    return ResourceId.newDocumentCollectionId(
+      database._rid,
+      idString
+    ).toString();
   }
 
   _self(rid: string) {

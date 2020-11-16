@@ -1,9 +1,13 @@
 /* eslint-disable class-methods-use-this, no-underscore-dangle, no-use-before-define */
 import query from "@zeit/cosmosdb-query";
+import LRU from "lru-cache";
 import uuid from "uuid/v4";
 import ItemObject from "./item-object";
 import Item from "./item";
-import ResourceId from "./resource-id";
+import getValue from "../utils/get-value";
+import { PartitionValue } from "../types";
+
+type Query = ReturnType<typeof query>;
 
 function ts() {
   return Math.floor(Date.now() / 1e3);
@@ -18,25 +22,42 @@ export default class Items<P extends Item, I extends Item> {
 
   _ridCount: number;
 
-  constructor(parent: P) {
+  _queryCache: LRU<string, Query>;
+
+  _partitionKeyPath: string[];
+
+  _uniqueKeyPaths: string[];
+
+  constructor(
+    parent: P,
+    partitionKeyPath: string[],
+    uniqueKeyPaths: string[] = []
+  ) {
     this._parent = parent;
     this._data = new Map();
     this._index = new Map();
     this._ridCount = 0;
+    this._queryCache = new LRU({ max: 100 });
+    this._partitionKeyPath = partitionKeyPath;
+    this._uniqueKeyPaths = uniqueKeyPaths.concat("/id");
   }
 
   create(data: { [x: string]: any }) {
-    if (this._item(data.id).read()) {
-      const err = new Error(
-        "Resource with specified id or name already exists."
-      );
-      // @ts-ignore
-      err.conflict = true;
-      throw err;
-    }
+    const partition = this._getPartition(data);
+    this._uniqueKeyPaths.forEach(keyPath => {
+      const keyPathValue = getValue(keyPath.slice(1).split("/"), data);
+      if (this._item(keyPath, keyPathValue, partition).read()) {
+        const err = new Error(
+          `Resource with specified ${keyPath.slice(1)} already exists.`
+        );
+        // @ts-ignore
+        err.conflict = true;
+        throw err;
+      }
+    });
 
     this._ridCount += 1;
-    const _rid = this._rid(this._ridCount.toString());
+    const _rid = this._rid(this._ridCount);
     const _data = {
       ...data,
       id: data.id,
@@ -48,13 +69,13 @@ export default class Items<P extends Item, I extends Item> {
     return this._set(_data);
   }
 
-  delete(idOrRid: string) {
-    const data = this._item(idOrRid).read();
+  delete(idOrRid: string, partition: PartitionValue) {
+    const data = this._item("/id", idOrRid, partition).read();
     if (!data) {
       throw new Error("does not exist");
     }
 
-    this._index.delete(data.id);
+    this._index.delete(this._getId("/id", idOrRid, partition));
     this._data.delete(data._rid);
   }
 
@@ -80,7 +101,7 @@ export default class Items<P extends Item, I extends Item> {
 
     const data = [...this._data.values()].map(item => item.read());
     const udf = this._userDefinedFunctions();
-    return query(params.query).exec(data, {
+    return this._getQuery(params.query).exec(data, {
       parameters: params.parameters,
       udf,
       maxItemCount,
@@ -100,11 +121,26 @@ export default class Items<P extends Item, I extends Item> {
     if (!this._parent.read()) return null;
 
     const data = [...this._data.values()].map(item => item.read());
-    return query("SELECT * FROM c").exec(data, { maxItemCount, continuation });
+    return this._getQuery("SELECT * FROM c").exec(data, {
+      maxItemCount,
+      continuation
+    });
   }
 
-  replace(data: { [x: string]: any }) {
-    const oldData = this._item(data.id).read();
+  replace(data: { [x: string]: any }, original: { [x: string]: any }) {
+    if (this._getPartition(data) !== this._getPartition(original)) {
+      const err = new Error(
+        `replacing partition key "${this._getPartitionKeyPath().join(
+          "."
+        )}" is not allowed`
+      );
+      // @ts-ignore
+      err.badRequest = true;
+      throw err;
+    }
+
+    const partition = this._getPartition(data);
+    const oldData = this._item("/id", data.id, partition).read();
     if (!oldData || data.id !== oldData.id) {
       const err = new Error("replacing id is not allowed");
       // @ts-ignore
@@ -125,12 +161,13 @@ export default class Items<P extends Item, I extends Item> {
   }
 
   upsert(data: { [x: string]: any }) {
-    const oldData = this._item(data.id).read();
-    return oldData ? this.replace(data) : this.create(data);
+    const partition = this._getPartition(data);
+    const oldData = this._item("/id", data.id, partition).read();
+    return oldData ? this.replace(data, oldData) : this.create(data);
   }
 
-  _item(idOrRid: string): I {
-    const rid = this._toRid(idOrRid);
+  _item(keyPath: string, keyPathValue: string, partition: PartitionValue): I {
+    const rid = this._toRid(keyPath, keyPathValue, partition);
     return this._data.get(rid) || this._newItem();
   }
 
@@ -139,7 +176,7 @@ export default class Items<P extends Item, I extends Item> {
     throw new Error("Not implemented");
   }
 
-  _rid(id: string): string {
+  _rid(id: number): string {
     throw new Error("Not implemented");
   }
 
@@ -149,13 +186,22 @@ export default class Items<P extends Item, I extends Item> {
   }
 
   _set(data: ItemObject) {
+    this._uniqueKeyPaths.forEach(keyPath => {
+      const keyPathValue = getValue(keyPath.slice(1).split("/"), data);
+      const id = this._getId(keyPath, keyPathValue, this._getPartition(data));
+      this._index.set(id, data._rid);
+    });
     this._data.set(data._rid, this._newItem(data));
-    this._index.set(data.id, data._rid);
     return data;
   }
 
-  _toRid(idOrRid: string) {
-    return this._index.get(idOrRid) || idOrRid;
+  _toRid(
+    keyPath: string,
+    keyPathValueOrRid: string,
+    partition: PartitionValue
+  ) {
+    const id = this._getId(keyPath, keyPathValueOrRid, partition);
+    return this._index.get(id) || keyPathValueOrRid;
   }
 
   _userDefinedFunctions():
@@ -165,5 +211,34 @@ export default class Items<P extends Item, I extends Item> {
     | undefined
     | null {
     return null;
+  }
+
+  _getQuery(sql: string): Query {
+    let q = this._queryCache.get(sql);
+    if (!q) {
+      q = query(sql);
+      this._queryCache.set(sql, q);
+    }
+    return q;
+  }
+
+  _getId(keyPath: string, id: string, partition: PartitionValue) {
+    return [partition || id, keyPath, id].join(":");
+  }
+
+  _getPartition(data: { [x: string]: any }): PartitionValue {
+    return getValue(this._getPartitionKeyPath(), data);
+  }
+
+  _getPartitionKeyPath(): string[] {
+    const [firstPath] = this._partitionKeyPath;
+    if (!firstPath) {
+      return ["id"]; // Default/fallback to `id` as partition key for now
+    }
+    const path = firstPath.slice(1).split("/");
+    if (path.length === 1 && path[0] === "_partitionKey") {
+      return ["id"];
+    }
+    return path;
   }
 }

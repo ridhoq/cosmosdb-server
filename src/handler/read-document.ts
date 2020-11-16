@@ -1,6 +1,8 @@
 import * as http from "http";
 import Account from "../account";
 import ItemObject from "../account/item-object";
+import trueHeader from "../true-header";
+import getPartitionFromHeader from "../utils/get-partition-from-header";
 
 /**
  * Given a collection configuration this filters out _partitionKey which
@@ -49,7 +51,7 @@ export default (
   const data = account
     .database(dbId)
     .collection(collId)
-    .document(docId)
+    .document(docId, getPartitionFromHeader(req, docId))
     .read();
 
   if (!data) {
@@ -60,7 +62,7 @@ export default (
     };
   }
 
-  if (req.headers["x-ms-documentdb-query-enablecrosspartition"] !== "true") {
+  if (!trueHeader(req, "x-ms-documentdb-query-enablecrosspartition")) {
     const collection = account
       .database(dbId)
       .collection(collId)

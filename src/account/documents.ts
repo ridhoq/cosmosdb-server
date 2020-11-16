@@ -1,4 +1,4 @@
-/* eslint-disable class-methods-use-this, no-underscore-dangle, no-use-before-define */
+/* eslint-disable class-methods-use-this, no-bitwise, no-underscore-dangle, no-use-before-define */
 import Collection from "./collection";
 import Document from "./document";
 import ItemObject from "./item-object";
@@ -19,10 +19,15 @@ export default class Documents extends Items<Collection, Document> {
     return `${parent._self}/docs/${rid}/`;
   }
 
-  _rid(id: string) {
+  _rid(id: number) {
+    const idBuffer = Buffer.alloc(8, 0);
+    idBuffer.writeInt32LE(id, 0);
+    idBuffer.writeInt8(ResourceId.DocumentByte << 4, 7);
+    const idString = ResourceId.bigNumberReadIntBE(idBuffer, 0, 8).toString();
+
     const collection = this._parent.read();
     const rid = ResourceId.parse(collection._rid);
-    rid.document = id;
+    rid.document = idString;
     return rid.toString();
   }
 

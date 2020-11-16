@@ -1,4 +1,4 @@
-/* eslint-disable class-methods-use-this, no-underscore-dangle, no-use-before-define */
+/* eslint-disable class-methods-use-this, no-bitwise, no-underscore-dangle, no-use-before-define */
 
 import Account from ".";
 import Database from "./database";
@@ -11,8 +11,9 @@ export default class Databases extends Items<Account, Database> {
     return new Database(data);
   }
 
-  _rid(id: string) {
-    return ResourceId.newDatabaseId(id).toString();
+  _rid(id: number) {
+    const idString = ((id << 8) | 0x80000000).toString();
+    return ResourceId.newDatabaseId(idString).toString();
   }
 
   _self(rid: string) {

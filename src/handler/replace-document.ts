@@ -1,6 +1,7 @@
 import * as http from "http";
 import Account from "../account";
 import json from "../json";
+import getPartitionFromHeader from "../utils/get-partition-from-header";
 
 export default async (
   account: Account,
@@ -19,22 +20,16 @@ export default async (
   const body = await json(req);
   if (!body.id) {
     res.statusCode = 400;
-    return { Message: "missing id" };
+    return { message: "missing id" };
   }
 
   const collection = account.database(dbId).collection(collId);
-  const data = collection.document(docId).read();
+  const data = collection
+    .document(docId, getPartitionFromHeader(req, docId))
+    .read();
   if (!data) {
     res.statusCode = 404;
     return {};
-  }
-
-  if (data.id !== body.id) {
-    res.statusCode = 400;
-    return {
-      code: "BadRequest",
-      message: "replacing id is not allowed"
-    };
   }
 
   if (req.headers["if-match"] && req.headers["if-match"] !== data._etag) {
@@ -46,5 +41,13 @@ export default async (
     };
   }
 
-  return collection.documents.replace(body);
+  try {
+    return collection.documents.replace(body, data);
+  } catch (error) {
+    if (error.badRequest) {
+      res.statusCode = 400;
+      return { code: "BadRequest", message: error.message };
+    }
+    throw error;
+  }
 };

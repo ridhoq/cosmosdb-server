@@ -1,4 +1,4 @@
-/* eslint-disable class-methods-use-this, no-underscore-dangle, no-use-before-define */
+/* eslint-disable class-methods-use-this, no-bitwise, no-underscore-dangle, no-use-before-define */
 import Collection from "./collection";
 import ItemObject from "./item-object";
 import Items from "./items";
@@ -19,7 +19,7 @@ export default class UserDefinedFunctions extends Items<
   };
 
   constructor(parent: Collection) {
-    super(parent);
+    super(parent, ["/id"]);
     this.functions = {};
   }
 
@@ -27,10 +27,15 @@ export default class UserDefinedFunctions extends Items<
     return new UserDefinedFunction(data);
   }
 
-  _rid(id: string) {
+  _rid(id: number) {
+    const idBuffer = Buffer.alloc(8, 0);
+    idBuffer.writeInt32LE(id, 0);
+    idBuffer.writeInt8(ResourceId.UserDefinedFunctionByte << 4, 7);
+    const idString = ResourceId.bigNumberReadIntBE(idBuffer, 0, 8).toString();
+
     const collection = this._parent.read();
     const rid = ResourceId.parse(collection._rid);
-    rid.userDefinedFunction = id;
+    rid.userDefinedFunction = idString;
     return rid.toString();
   }
 
@@ -44,13 +49,13 @@ export default class UserDefinedFunctions extends Items<
   }
 
   replace({ id, body }: { id: string; body: string }) {
-    const oldData = this._item(id).read();
+    const oldData = this._item("/id", id, id).read();
     if (!oldData) {
       throw new Error("does not exist");
     }
 
     this.functions[oldData.id] = define(body);
-    return super.replace({ id, body });
+    return super.replace({ id, body }, oldData);
   }
 
   create({ id, body }: { id: string; body: string }) {
@@ -64,12 +69,12 @@ export default class UserDefinedFunctions extends Items<
   }
 
   delete(idOrRid: string) {
-    const data = this._item(idOrRid).read();
+    const data = this._item("/id", idOrRid, idOrRid).read();
     if (!data) {
       throw new Error("does not exist");
     }
 
     delete this.functions[data.id];
-    return super.delete(idOrRid);
+    return super.delete(idOrRid, idOrRid);
   }
 }
